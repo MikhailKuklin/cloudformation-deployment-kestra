@@ -1,0 +1,351 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Kestra infrastructure on AWS
+
+Parameters:
+  KeyPairParameterName:
+    Description: Existing KeyPairParameter
+    Type: AWS::EC2::KeyPair::KeyName
+
+  S3BucketName:
+    Description: S3 bucket name
+    Type: String
+
+  VpcCidrBlock:
+    Description: VPC CIDR block
+    Type: String
+
+Resources:
+  KestraS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+
+  KestraVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidrBlock
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: KestraVPC
+
+  KestraIGW:
+    Type: AWS::EC2::InternetGateway
+
+  KestraIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref KestraVPC
+      InternetGatewayId: !Ref KestraIGW
+
+  KestraPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+
+      VpcId: !Ref KestraVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: KestraPublicSubnet
+
+  KestraPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref KestraVPC
+      CidrBlock: 10.0.101.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: KeestraPrivateSubnet1
+
+  KestraPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref KestraVPC
+      CidrBlock: 10.0.102.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: KeestraPrivateSubnet2
+
+  KestraPublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref KestraVPC
+      Tags:
+        - Key: Name
+          Value: KestraPublicRT
+
+  KestraPrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref KestraVPC
+      Tags:
+        - Key: Name
+          Value: KestraPrivateRT
+
+  PrivateRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref KestraPrivateSubnet1
+      RouteTableId: !Ref KestraPrivateRT
+
+  PrivateRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref KestraPrivateSubnet2
+      RouteTableId: !Ref KestraPrivateRT
+
+  PublicRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref KestraPublicSubnet1
+      RouteTableId: !Ref KestraPublicRT
+
+  KestraRoute:
+    Type: AWS::EC2::Route
+    Properties: 
+      RouteTableId: !Ref KestraPublicRT
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref KestraIGW
+
+  # Kestra Web Security Group
+  KestraWebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Kestra web servers
+      VpcId: !Ref KestraVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: #add your ip /16
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: KestraWebSG
+
+  # Kestra Database Security Group
+  KestraDbSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref KestraVPC
+      GroupDescription: Security group for Kestra databases
+      SecurityGroupIngress:
+        - IpProtocol: tcp  
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !GetAtt KestraWebSG.GroupId
+      Tags:
+        - Key: Name
+          Value: KestraDbSG
+
+  KestraDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: DB subnet group for Kestra
+      SubnetIds:
+        - !Ref KestraPrivateSubnet1
+        - !Ref KestraPrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: KestraDBSubnetGroup
+
+  KestraDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 10
+      Engine: postgres
+      EngineVersion: 16.3
+      DBInstanceClass: db.t3.micro
+      DBName: kestradbcf
+      MasterUsername: #add db_username
+      MasterUserPassword: #add db_password
+      DBSubnetGroupName: !Ref KestraDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref KestraDbSG
+      Tags:
+        - Key: Name
+          Value: KestraDB
+
+  KestraUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: kestra-user
+      Policies:
+        - PolicyName: kestra-data-bucket-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:Get*
+                  - s3:Put*
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  AccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      Serial: 0
+      Status: Active
+      UserName: !Ref KestraUser
+
+  AccessKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/aws-access-key
+      Description: KestraUser Access Key
+      SecretString: !Sub '{"AccessKeyId":"${AccessKey}","SecretAccessKey":"${AccessKey.SecretAccessKey}"}'
+
+  KestraWeb:
+     Type: AWS::EC2::Instance
+     DependsOn: EC2InstanceProfile
+     Properties:
+       ImageId: ami-0a422d70f727fe93e
+       InstanceType: t3.medium
+       IamInstanceProfile: !Ref EC2InstanceProfile
+       SubnetId: !Ref KestraPublicSubnet1
+       KeyName: !Ref KeyPairParameterName
+       SecurityGroupIds:
+         - !Ref KestraWebSG
+       UserData:
+         Fn::Base64: !Sub 
+          - |
+            #!/bin/bash
+            sudo apt update -y
+            sudo apt install docker.io -y
+            sudo apt install docker-compose -y
+            sudo apt-get update -y && apt-get install postgresql-client -y
+
+            PGPASSWORD=#add db_password createdb -h ${KestraDBAddress} -U #add db_username -p 5432 --no-password kestra
+
+            cat <<EOL > /home/ubuntu/docker-compose.yml
+            version: '3'
+            services:
+              kestra:
+                image: kestra/kestra:latest
+                entrypoint: /bin/bash
+                environment:
+                  KESTRA_CONFIGURATION: |
+                    datasources:
+                      postgres:
+                        url: jdbc:postgresql://${KestraDBAddress}:5432/kestra
+                        driverClassName: org.postgresql.Driver
+                        username: ${db_username}
+                        password: ${db_password}
+                    kestra:
+                      repository:
+                        type: postgres
+                      storage:
+                        type: s3
+                        s3:
+                          accessKey: ${AWSAccessKey}
+                          secretKey: ${AWSSecretKey}
+                          region: "${aws_region}"
+                          bucket: ${s3bucket}
+                      queue:
+                        type: postgres
+                      server:
+                        basic-auth:
+                          enabled: true
+                          username: "${kestra_user}"
+                          password: "${kestra_password}"
+                      tasks:
+                        scripts:
+                          docker:
+                            volume-enabled: true
+                        tmp-dir:
+                          path: /tmp/kestra-wd/tmp
+                      url: http://localhost:8080/
+                      variables:
+                        env-vars-prefix: ""
+                user: "root"
+                command:
+                  - -c
+                  - /app/kestra server standalone --worker-thread=128
+                volumes:
+                  - /var/run/docker.sock:/var/run/docker.sock
+                  - /tmp/kestra-wd:/tmp/kestra-wd
+                ports:
+                  - "8080:8080"
+                  - "8081:8081"
+            EOL
+
+            sudo docker-compose -f /home/ubuntu/docker-compose.yml up -d
+
+          - {AWSSecretKey: !GetAtt AccessKey.SecretAccessKey, AWSAccessKey: !Ref AccessKey, KestraDBAddress: !GetAtt KestraDB.Endpoint.Address, KestraDBPort: !GetAtt KestraDB.Endpoint.Port, s3bucket: !Ref S3BucketName, aws_region: "eu-west-1", db_username: "XXX", db_password: "XXX", kestra_user: "admin@kestra.io", kestra_password: "XXX" }
+       Tags:
+         - Key: Name
+           Value: KestraWeb
+
+  KestraWebEIP:
+     Type: AWS::EC2::EIP
+     Properties:
+       InstanceId: !Ref KestraWeb
+       Tags:
+         - Key: Name
+           Value: KestraWebEIP
+
+  EC2S3AccessRole:
+     Type: AWS::IAM::Role
+     Properties:
+       AssumeRolePolicyDocument:
+         Version: 2012-10-17
+         Statement:
+           - Effect: Allow
+             Principal:
+               Service: ec2.amazonaws.com
+             Action: sts:AssumeRole
+
+  S3AccessPolicy:
+     Type: AWS::IAM::Policy
+     Properties:
+       Roles:
+         - !Ref EC2S3AccessRole
+       PolicyName: S3AccessPolicy
+       PolicyDocument:
+         Version: 2012-10-17
+         Statement:
+           - Effect: Allow
+             Action:
+             - secretsmanager:Get*
+             Resource:
+               - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AccessKeySecret}*
+               - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:snowflake-kestra-user/snowflake-credentials
+           - Effect: Allow
+             Action:
+               - s3:List*
+               - s3:Get*
+               - s3:Put*
+             Resource:
+               - !Sub "arn:aws:s3:::${S3BucketName}"
+               - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+  EC2InstanceProfile:
+     Type: AWS::IAM::InstanceProfile
+     Properties:
+       Roles:
+         - !Ref EC2S3AccessRole
+
+Outputs:
+    KestraDBAddress:
+      Description: "The address of the Kestra RDS instance"
+      Value: !GetAtt KestraDB.Endpoint.Address
+      Export:
+        Name: KestraDBAddress
+
+    KestraDBPort:
+      Description: "The port of the Kestra RDS instance"
+      Value: !GetAtt KestraDB.Endpoint.Port
+      Export:
+        Name: KestraDBPort

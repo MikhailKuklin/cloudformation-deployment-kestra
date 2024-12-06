@@ -1,0 +1,3 @@
+KeyPairParameterName: kestra-poc
+S3BucketName: sanoma-smfdp-dev-kestra
+VpcCidrBlock: 10.0.0.0/16
