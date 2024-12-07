@@ -40,7 +40,7 @@ mv kestra_kp kestra_kp.pem
 
 > Note: depending of your system, the key might be named `kestra_kp` (without the `.pem` extension). You can use `mv kestra_kp kestra_kp.pem` to solve this issue.
 
-After that, you have to add it to EC2/Key Pairs in the AWS Console or via CLI/CloudFormation if you wish. In this example, key pair already existed in the AWS account.
+After that, you have to add it to EC2/Key Pairs in the AWS Console or via CLI/CloudFormation if you wish. In this example, key pair already existed in the AWS account and there was no need to create a new one.
 
 ### Deploy
 
